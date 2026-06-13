@@ -1,8 +1,9 @@
 const std = @import("std");
-const ts = @import("tree-sitter"); 
+const ts = @import("tree-sitter");
+const kinds = @import("kinds");
 
 pub const std_options: std.Options = .{
-    .log_level = .debug,
+    .log_level = .warn,
 };
 
 extern fn tree_sitter_markdown() *ts.Language;
@@ -302,28 +303,34 @@ pub const Components = struct {
 // I think we can keep up this logic and just not commit the zero length changes.
 // or we don't go into the nodes that we know should be concealed.
 
-pub const MarkdownKind = enum(u8) {
-};
+pub const MarkdownKind = enum(u8) {};
 
 pub fn emitText(doc: *HtmlDocument, parent: HtmlDocument.Index, cursor: *ts.TreeCursor, contents: []const u8) !void {
     var el_idx: HtmlDocument.Index = parent;
     const node = cursor.node();
     const name = cursor.node().kind();
+    const kind_id = cursor.node().kindId();
     std.log.debug("Parsing text node {s} with text {s}", .{ name, contents[node.startByte()..node.endByte()] });
-    if (std.mem.eql(u8, name, "inline")) {
-        // do nothing
-    } else if (std.mem.eql(u8, name, "strong_emphasis")) {
-        el_idx = try Components.strong(doc, parent);
-    } else if (std.mem.eql(u8, name, "strikethrough")) {
-        el_idx = try Components.s(doc, parent);
-    } else if (std.mem.eql(u8, name, "emphasis")) {
-        el_idx = try Components.em(doc, parent);
-    } else if (std.mem.eql(u8, name, "emphasis_delimiter")) {
-        return;
-    } else if (std.mem.eql(u8, name, "hard_line_break")) {
-        _ = try Components.br(doc, parent);
-    } else {
-        std.log.warn("Unrecognized text node: {s}", .{name});
+    switch (kinds.MarkdownInline.map[kind_id]) {
+        .@"inline" => {},
+        .strong_emphasis => {
+            el_idx = try Components.strong(doc, parent);
+        },
+        .strikethrough => {
+            el_idx = try Components.s(doc, parent);
+        },
+        .emphasis => {
+            el_idx = try Components.em(doc, parent);
+        },
+        .emphasis_delimiter => {
+            return;
+        },
+        .hard_line_break => {
+            _ = try Components.br(doc, parent);
+        },
+        else => {
+            std.log.warn("Unrecognized text node: {s}", .{name});
+        },
     }
     var begin = node.startByte();
     const end = node.endByte();
@@ -372,30 +379,43 @@ pub fn emitNode(doc: *HtmlDocument, parent: HtmlDocument.Index, cursor: *ts.Tree
             return;
         }
     }
-    if (std.mem.eql(u8, name, "document")) {
-        el_idx = try Components.document(doc, parent);
-    } else if (std.mem.eql(u8, name, "paragraph")) {
-        el_idx = try Components.p(doc, parent);
-    } else if (std.mem.eql(u8, name, "section")) {
-    } else if (std.mem.eql(u8, name, "atx_heading")) {
-        std.debug.assert(cursor.gotoFirstChild());
-        defer std.debug.assert(cursor.gotoParent());
-        const heading_kind = cursor.node().kind();
-        if (std.mem.eql(u8, heading_kind, "atx_h1_marker")) {
-            el_idx = try Components.h(doc, parent, 1);
-        } else if (std.mem.eql(u8, heading_kind, "atx_h2_marker")) {
-            el_idx = try Components.h(doc, parent, 2);
-        } else if (std.mem.eql(u8, heading_kind, "atx_h3_marker")) {
-            el_idx = try Components.h(doc, parent, 3);
-        } else if (std.mem.eql(u8, heading_kind, "atx_h4_marker")) {
-            el_idx = try Components.h(doc, parent, 4);
-        } else if (std.mem.eql(u8, heading_kind, "atx_h5_marker")) {
-            el_idx = try Components.h(doc, parent, 5);
-        } else if (std.mem.eql(u8, heading_kind, "atx_h6_marker")) {
-            el_idx = try Components.h(doc, parent, 6);
-        } else unreachable;
-    } else {
-        std.log.warn("Unrecognized node: {s}", .{name});
+    const kind_id = cursor.node().kindId();
+    switch (kinds.Markdown.map[kind_id]) {
+        .document => {
+            el_idx = try Components.document(doc, parent);
+        },
+        .paragraph => {
+            el_idx = try Components.p(doc, parent);
+        },
+        .atx_heading => {
+            std.debug.assert(cursor.gotoFirstChild());
+            defer std.debug.assert(cursor.gotoParent());
+            const heading_id = cursor.node().kindId();
+            el_idx = try Components.h(
+                doc,
+                parent,
+                switch (kinds.Markdown.map[heading_id]) {
+                    .atx_h1_marker => 1,
+                    .atx_h2_marker => 2,
+                    .atx_h3_marker => 3,
+                    .atx_h4_marker => 4,
+                    .atx_h5_marker => 5,
+                    .atx_h6_marker => 6,
+                    else => unreachable,
+                },
+            );
+        },
+        .section,
+        .atx_h1_marker,
+        .atx_h2_marker,
+        .atx_h3_marker,
+        .atx_h4_marker,
+        .atx_h5_marker,
+        .atx_h6_marker,
+        => {},
+        else => {
+            std.log.warn("Unrecognized node: {s}", .{name});
+        },
     }
     if (!cursor.gotoFirstChild()) {
         return;
@@ -634,12 +654,12 @@ pub fn main(init: std.process.Init) !void {
             .file => {
                 const name_md = entry.basename;
                 const name = std.mem.cutSuffix(u8, name_md, ".md") orelse continue;
-                const name_html = try std.mem.join(arena, ".", &.{ name, "html" } );
+                const name_html = try std.mem.join(arena, ".", &.{ name, "html" });
                 const file_md = try md_dir.readFileAlloc(io, name_md, gpa, .unlimited);
                 defer gpa.free(file_md);
                 var doc = try parseFile(gpa, file_md, &parser);
                 defer doc.deinit();
-            
+
                 const file_html = html_dir.openFile(io, name_html, .{ .mode = .write_only }) catch |err| switch (err) {
                     error.FileNotFound => try html_dir.createFile(io, name_html, .{}),
                     else => return err,

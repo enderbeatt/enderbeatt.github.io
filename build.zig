@@ -20,11 +20,17 @@ pub fn build(b: *Build) !void {
     };
     const md2html_exe = md2html(b, &opts);
     const server_exe = server(b, &opts);
+    const generate_enums_exe = generate_enums(b, &opts);
+
+    const gen_step = b.step("gen", "Test the enum generation");
+    const get_run_step = b.addRunArtifact(generate_enums_exe);
+    get_run_step.addPassthruArgs();
+    gen_step.dependOn(&get_run_step.step);
 
     const parse_step = b.step("parse", "Run md2html over dir");
     const parse_install = b.addInstallArtifact(md2html_exe, .{});
 
-    const parse_gen = try generate(b, md2html_exe);
+    const parse_gen = try generateBlog(b, md2html_exe);
 
     parse_step.dependOn(&parse_install.step);
     parse_step.dependOn(&parse_gen.step);
@@ -42,7 +48,7 @@ pub fn build(b: *Build) !void {
 }
 
 
-fn generate(b: *Build, md2html_exe: *Build.Step.Compile) !*Build.Step.InstallDir {
+fn generateBlog(b: *Build, md2html_exe: *Build.Step.Compile) !*Build.Step.InstallDir {
     const parse_run = b.addRunArtifact(md2html_exe);
 
     for (FILES_TO_WATCH) |filename| {
@@ -77,10 +83,44 @@ fn md2html(b: *Build, opts: *const Opts) *Build.Step.Compile {
     });
     const markdown = getTreesitterParser(b, "markdown", opts);
     const markdown_inline = getTreesitterParser(b, "markdown-inline", opts);
+    const gen = generate_enums(b, opts);
+    const gen_step = b.addRunArtifact(gen);
+    const out = gen_step.addOutputFileArg("kinds.zig");
+
     const exe = b.addExecutable(.{
         .name = "md2html",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/md2html.zig"),
+            .target = opts.target,
+            .optimize = opts.optimize,
+            .imports = &.{
+                .{
+                    .name = "tree-sitter",
+                    .module = tree_sitter.module("tree_sitter"),
+                }
+            },
+        }),
+    });
+    exe.root_module.addAnonymousImport("kinds", .{
+        .root_source_file = out,
+    });
+    exe.root_module.linkLibrary(markdown);
+    exe.root_module.linkLibrary(markdown_inline);
+    return exe;
+}
+
+ 
+fn generate_enums(b: *Build, opts: *const Opts) *Build.Step.Compile {
+    const tree_sitter = b.dependency("tree_sitter", .{
+        .target = opts.target,
+        .optimize = opts.optimize,
+    });
+    const markdown = getTreesitterParser(b, "markdown", opts);
+    const markdown_inline = getTreesitterParser(b, "markdown-inline", opts);
+    const exe = b.addExecutable(.{
+        .name = "generate_enums",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/generate_enums.zig"),
             .target = opts.target,
             .optimize = opts.optimize,
             .imports = &.{
