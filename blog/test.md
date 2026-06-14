@@ -2,6 +2,10 @@ Hello, World!
 
 ```cpp 
 int a = 1 + 2;
+
+auto main = [&](auto&& a) -> namespace::Hello<int, Foul> {
+    return "heeeeeeh" + 3.14;
+}
 ```
 
 # Try

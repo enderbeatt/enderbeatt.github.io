@@ -83,9 +83,11 @@ fn md2html(b: *Build, opts: *const Opts) *Build.Step.Compile {
     });
     const markdown = getTreesitterParser(b, "markdown", opts);
     const markdown_inline = getTreesitterParser(b, "markdown-inline", opts);
+    const cpp = getTreesitterParser(b, "cpp", opts);
+
     const gen = generate_enums(b, opts);
     const gen_step = b.addRunArtifact(gen);
-    const out = gen_step.addOutputFileArg("kinds.zig");
+    const out = gen_step.addOutputFileArg("ts_help.zig");
 
     const exe = b.addExecutable(.{
         .name = "md2html",
@@ -101,11 +103,12 @@ fn md2html(b: *Build, opts: *const Opts) *Build.Step.Compile {
             },
         }),
     });
-    exe.root_module.addAnonymousImport("kinds", .{
+    exe.root_module.addAnonymousImport("ts_help", .{
         .root_source_file = out,
     });
     exe.root_module.linkLibrary(markdown);
     exe.root_module.linkLibrary(markdown_inline);
+    exe.root_module.linkLibrary(cpp);
     return exe;
 }
 
@@ -117,6 +120,7 @@ fn generate_enums(b: *Build, opts: *const Opts) *Build.Step.Compile {
     });
     const markdown = getTreesitterParser(b, "markdown", opts);
     const markdown_inline = getTreesitterParser(b, "markdown-inline", opts);
+    const cpp = getTreesitterParser(b, "cpp", opts);
     const exe = b.addExecutable(.{
         .name = "generate_enums",
         .root_module = b.createModule(.{
@@ -133,6 +137,7 @@ fn generate_enums(b: *Build, opts: *const Opts) *Build.Step.Compile {
     });
     exe.root_module.linkLibrary(markdown);
     exe.root_module.linkLibrary(markdown_inline);
+    exe.root_module.linkLibrary(cpp);
     return exe;
 }
 

@@ -8,6 +8,7 @@ pub const std_options: std.Options = .{
 
 extern fn tree_sitter_markdown() *ts.Language;
 extern fn tree_sitter_markdown_inline() *ts.Language;
+extern fn tree_sitter_cpp() *ts.Language;
 
 pub fn createEnum(w: *Io.Writer, name: []const u8, lang: *const ts.Language, arena: std.mem.Allocator) !void {
     try w.print("pub const {s} = enum {{\n", .{name});
@@ -16,20 +17,7 @@ pub fn createEnum(w: *Io.Writer, name: []const u8, lang: *const ts.Language, are
     for (0..lang.nodeKindCount()) |i| {
         const smol: u16 = @intCast(i);
         const slice = lang.nodeKindForId(smol).?;
-        const enum_field = blk: {
-            if (std.zig.isValidId(slice) and !std.mem.eql(u8, slice, "_")) {
-                break :blk try arena.dupe(u8, slice);
-            } else if (std.mem.eql(u8, slice, "\"")) {
-                break :blk try arena.dupe(u8,
-                    \\@"\""
-                );
-            } else if (std.mem.eql(u8, slice, "\\")) {
-                break :blk try arena.dupe(u8,
-                    \\@"\\"
-                );
-            }
-            break :blk try std.fmt.allocPrint(arena, "@\"{s}\"", .{slice});
-        };
+        const enum_field = try std.fmt.allocPrint(arena, "{f}", .{std.zig.fmtId(slice)});
         const res = try map.getOrPutValue(arena, slice, enum_field);
         if (!res.found_existing) {
             try w.print("    {s},\n", .{enum_field});
@@ -68,6 +56,10 @@ pub fn main(init: std.process.Init) !void {
     const markdown_inline = tree_sitter_markdown_inline();
     defer markdown_inline.destroy();
     try createEnum(&writer.interface, "MarkdownInline", markdown_inline, arena);
+
+    const cpp = tree_sitter_cpp();
+    defer cpp.destroy();
+    try createEnum(&writer.interface, "Cpp", cpp, arena);
 
     try writer.flush();
 }

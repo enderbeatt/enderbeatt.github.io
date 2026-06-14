@@ -1,6 +1,6 @@
 const std = @import("std");
 const ts = @import("tree-sitter");
-const kinds = @import("kinds");
+const ts_help = @import("ts_help");
 
 pub const std_options: std.Options = .{
     .log_level = .warn,
@@ -8,6 +8,7 @@ pub const std_options: std.Options = .{
 
 extern fn tree_sitter_markdown() *ts.Language;
 extern fn tree_sitter_markdown_inline() *ts.Language;
+extern fn tree_sitter_cpp() *ts.Language;
 
 // what kind of things do i want?
 // 1. I want to be able to do .md -> .html generation
@@ -371,7 +372,7 @@ pub fn emitText(doc: *HtmlDocument, parent: HtmlDocument.Index, cursor: *ts.Tree
     const kind_id = cursor.node().kindId();
     std.log.debug("Parsing text node {s} with text {s}", .{ name, contents[node.startByte()..node.endByte()] });
     defer std.log.debug("Quit parsing test node {s}", .{ name });
-    switch (kinds.MarkdownInline.map[kind_id]) {
+    switch (ts_help.MarkdownInline.map[kind_id]) {
         .strong_emphasis => {
             el_idx = try Components.strong(doc, parent);
         },
@@ -413,7 +414,7 @@ pub fn emitText(doc: *HtmlDocument, parent: HtmlDocument.Index, cursor: *ts.Tree
                 const child_node = cursor.node();
                 if (cursor.node().isNamed()) {
                     const slice = contents[child_node.startByte()..child_node.endByte()];
-                    switch (kinds.MarkdownInline.map[child_node.kindId()]) {
+                    switch (ts_help.MarkdownInline.map[child_node.kindId()]) {
                         .link_destination => try el.attrs.put(doc.gpa, "href", .{ .str = slice }),
                         // quotes are also a part of link_title for some reason
                         .link_title => try el.attrs.put(doc.gpa, "title", .{ .str = slice[1..slice.len-1] }),
@@ -436,7 +437,7 @@ pub fn emitText(doc: *HtmlDocument, parent: HtmlDocument.Index, cursor: *ts.Tree
                 const child_node = cursor.node();
                 if (cursor.node().isNamed()) {
                     const slice = contents[child_node.startByte()..child_node.endByte()];
-                    switch (kinds.MarkdownInline.map[child_node.kindId()]) {
+                    switch (ts_help.MarkdownInline.map[child_node.kindId()]) {
                         .link_destination => try el.attrs.put(doc.gpa, "src", .{ .str = slice }),
                         // quotes are also a part of link_title for some reason
                         .link_title => try el.attrs.put(doc.gpa, "alt", .{ .str = slice[1..slice.len-1] }),
@@ -505,7 +506,7 @@ pub fn emitNode(doc: *HtmlDocument, parent: HtmlDocument.Index, cursor: *ts.Tree
         }
     }
     const kind_id = cursor.node().kindId();
-    switch (kinds.Markdown.map[kind_id]) {
+    switch (ts_help.Markdown.map[kind_id]) {
         .document => {
             el_idx = try Components.document(doc, parent);
         },
@@ -519,7 +520,7 @@ pub fn emitNode(doc: *HtmlDocument, parent: HtmlDocument.Index, cursor: *ts.Tree
             el_idx = try Components.h(
                 doc,
                 parent,
-                switch (kinds.Markdown.map[heading_id]) {
+                switch (ts_help.Markdown.map[heading_id]) {
                     .atx_h1_marker => 1,
                     .atx_h2_marker => 2,
                     .atx_h3_marker => 3,
@@ -537,7 +538,7 @@ pub fn emitNode(doc: *HtmlDocument, parent: HtmlDocument.Index, cursor: *ts.Tree
             el_idx = try Components.h(
                 doc,
                 parent,
-                switch (kinds.Markdown.map[heading_id]) {
+                switch (ts_help.Markdown.map[heading_id]) {
                     .setext_h1_underline => 1,
                     .setext_h2_underline => 2,
                     else => unreachable,
@@ -549,7 +550,7 @@ pub fn emitNode(doc: *HtmlDocument, parent: HtmlDocument.Index, cursor: *ts.Tree
             defer std.debug.assert(cursor.gotoParent());
             std.debug.assert(cursor.gotoFirstChild());
             defer std.debug.assert(cursor.gotoParent());
-            el_idx = switch (kinds.Markdown.map[cursor.node().kindId()]) {
+            el_idx = switch (ts_help.Markdown.map[cursor.node().kindId()]) {
                 .list_marker_minus => try Components.ul(doc, parent),
                 .list_marker_dot => try Components.ol(doc, parent),
                 else => unreachable,
@@ -696,10 +697,12 @@ pub const Parser = struct {
 pub const Language = struct {
     language: *const ts.Language,
     injections: ?*ts.Query = null,
+    highlights: ?*ts.Query = null,
 
     pub const Registry = struct {
         markdown: Language,
         markdown_inline: Language,
+        cpp: Language,
 
         const QueryError = std.Io.Dir.ReadFileAllocError || ts.Query.Error;
 
@@ -728,6 +731,9 @@ pub const Language = struct {
                 .markdown_inline = .{
                     .language = tree_sitter_markdown_inline(),
                 },
+                .cpp = .{
+                    .language = tree_sitter_cpp(),
+                },
             };
             self.markdown.injections = getQuery(
                 io,
@@ -735,18 +741,34 @@ pub const Language = struct {
                 self.markdown.language,
                 gpa,
             ) catch |err| logErr(err);
+
             self.markdown_inline.injections = getQuery(
                 io,
                 "vendor/markdown-inline/queries/injections.scm",
                 self.markdown_inline.language,
                 gpa,
             ) catch |err| logErr(err);
+
+            self.cpp.injections = getQuery(
+                io,
+                "vendor/cpp/queries/injections.scm",
+                self.cpp.language,
+                gpa,
+            ) catch |err| logErr(err);
+            self.cpp.highlights = getQuery(
+                io,
+                "vendor/cpp/queries/highlights.scm",
+                self.cpp.language,
+                gpa,
+            ) catch |err| logErr(err);
+
             return self;
         }
 
         pub fn deinit(self: *Registry) void {
             self.markdown.deinit();
             self.markdown_inline.deinit();
+            self.cpp.deinit();
             self.* = undefined;
         }
     };
@@ -754,6 +776,9 @@ pub const Language = struct {
     pub fn deinit(self: *Language) void {
         self.language.destroy();
         if (self.injections) |q| {
+            q.destroy();
+        }
+        if (self.highlights) |q| {
             q.destroy();
         }
         self.* = undefined;
