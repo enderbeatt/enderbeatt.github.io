@@ -135,7 +135,10 @@ pub const HtmlDocument = struct {
             try w.writeAll(name);
             switch (value) {
                 .boolean => {},
-                .str => |s| try w.print("=\"{s}\"", .{s}),
+                .str => |s| {
+                    std.log.debug("attr {s}={s}", .{name, s});
+                    try w.print("=\"{s}\"", .{s});
+                }
             }
         }
     }
@@ -225,11 +228,39 @@ pub const Components = struct {
             .tag = "p",
         });
     }
+    
+    pub fn code(doc: *HtmlDocument, parent: HtmlDocument.Index) !HtmlDocument.Index {
+        return try doc.addNode(parent, .{
+            .type = .regular,
+            .tag = "code",
+        });
+    }
+
+    pub fn img(doc: *HtmlDocument, parent: HtmlDocument.Index) !HtmlDocument.Index {
+        return try doc.addNode(parent, .{
+            .type = .void,
+            .tag = "img",
+        });
+    }
+
+    pub fn a(doc: *HtmlDocument, parent: HtmlDocument.Index) !HtmlDocument.Index {
+        return try doc.addNode(parent, .{
+            .type = .regular,
+            .tag = "a",
+        });
+    }
 
     pub fn br(doc: *HtmlDocument, parent: HtmlDocument.Index) !HtmlDocument.Index {
         return try doc.addNode(parent, .{
             .type = .void,
             .tag = "br",
+        });
+    }
+
+    pub fn hr(doc: *HtmlDocument, parent: HtmlDocument.Index) !HtmlDocument.Index {
+        return try doc.addNode(parent, .{
+            .type = .void,
+            .tag = "hr",
         });
     }
 
@@ -251,6 +282,34 @@ pub const Components = struct {
         return try doc.addNode(parent, .{
             .type = .regular,
             .tag = "em",
+        });
+    }
+
+    pub fn ul(doc: *HtmlDocument, parent: HtmlDocument.Index) !HtmlDocument.Index {
+        return try doc.addNode(parent, .{
+            .type = .regular,
+            .tag = "ul",
+        });
+    }
+
+    pub fn ol(doc: *HtmlDocument, parent: HtmlDocument.Index) !HtmlDocument.Index {
+        return try doc.addNode(parent, .{
+            .type = .regular,
+            .tag = "ol",
+        });
+    }
+     
+    pub fn li(doc: *HtmlDocument, parent: HtmlDocument.Index) !HtmlDocument.Index {
+        return try doc.addNode(parent, .{
+            .type = .regular,
+            .tag = "li",
+        });
+    }
+
+    pub fn blockquote(doc: *HtmlDocument, parent: HtmlDocument.Index) !HtmlDocument.Index {
+        return try doc.addNode(parent, .{
+            .type = .regular,
+            .tag = "blockquote",
         });
     }
 
@@ -311,8 +370,8 @@ pub fn emitText(doc: *HtmlDocument, parent: HtmlDocument.Index, cursor: *ts.Tree
     const name = cursor.node().kind();
     const kind_id = cursor.node().kindId();
     std.log.debug("Parsing text node {s} with text {s}", .{ name, contents[node.startByte()..node.endByte()] });
+    defer std.log.debug("Quit parsing test node {s}", .{ name });
     switch (kinds.MarkdownInline.map[kind_id]) {
-        .@"inline" => {},
         .strong_emphasis => {
             el_idx = try Components.strong(doc, parent);
         },
@@ -322,12 +381,78 @@ pub fn emitText(doc: *HtmlDocument, parent: HtmlDocument.Index, cursor: *ts.Tree
         .emphasis => {
             el_idx = try Components.em(doc, parent);
         },
-        .emphasis_delimiter => {
-            return;
+        .code_span => {
+            el_idx = try Components.code(doc, parent);
         },
+        .link_destination, 
+        .link_title,
+        .code_span_delimiter,
+        .emphasis_delimiter => return,
         .hard_line_break => {
             _ = try Components.br(doc, parent);
         },
+        .backslash_escape => {
+            // removing backslash
+            _ = try Components.text(doc, parent, contents[node.startByte()+1..node.endByte()]);
+            return;
+        },
+        .uri_autolink => {
+            el_idx = try Components.a(doc, parent);
+            var el = doc.getElement(el_idx);
+            const slice = contents[node.startByte()+1..node.endByte()-1];
+            try el.attrs.put(doc.gpa, "href", .{ .str = slice });
+            _ = try Components.text(doc, el_idx, slice);
+            return;
+        },
+        .inline_link => {
+            std.debug.assert(cursor.gotoFirstChild());
+            defer std.debug.assert(cursor.gotoParent());
+            el_idx = try Components.a(doc, parent);
+            var el = doc.getElement(el_idx);
+            while (true) {
+                const child_node = cursor.node();
+                if (cursor.node().isNamed()) {
+                    const slice = contents[child_node.startByte()..child_node.endByte()];
+                    switch (kinds.MarkdownInline.map[child_node.kindId()]) {
+                        .link_destination => try el.attrs.put(doc.gpa, "href", .{ .str = slice }),
+                        // quotes are also a part of link_title for some reason
+                        .link_title => try el.attrs.put(doc.gpa, "title", .{ .str = slice[1..slice.len-1] }),
+                        .link_text => try emitText(doc, el_idx, cursor, contents),
+                        else => unreachable,
+                    }
+                }
+                if (!cursor.gotoNextSibling()) {
+                    break;
+                }
+            }
+            return;
+        },
+        .image => {
+            std.debug.assert(cursor.gotoFirstChild());
+            defer std.debug.assert(cursor.gotoParent());
+            el_idx = try Components.img(doc, parent);
+            var el = doc.getElement(el_idx);
+            while (true) {
+                const child_node = cursor.node();
+                if (cursor.node().isNamed()) {
+                    const slice = contents[child_node.startByte()..child_node.endByte()];
+                    switch (kinds.MarkdownInline.map[child_node.kindId()]) {
+                        .link_destination => try el.attrs.put(doc.gpa, "src", .{ .str = slice }),
+                        // quotes are also a part of link_title for some reason
+                        .link_title => try el.attrs.put(doc.gpa, "alt", .{ .str = slice[1..slice.len-1] }),
+                        .image_description => try el.attrs.put(doc.gpa, "title", .{ .str = slice }),
+                        else => unreachable,
+                    }
+                }
+                if (!cursor.gotoNextSibling()) {
+                    break;
+                }
+            }
+            return;
+        },
+        .@"inline",
+        .link_text,
+        => {},
         else => {
             std.log.warn("Unrecognized text node: {s}", .{name});
         },
@@ -405,13 +530,53 @@ pub fn emitNode(doc: *HtmlDocument, parent: HtmlDocument.Index, cursor: *ts.Tree
                 },
             );
         },
+        .setext_heading => {
+            std.debug.assert(cursor.gotoLastChild());
+            defer std.debug.assert(cursor.gotoParent());
+            const heading_id = cursor.node().kindId();
+            el_idx = try Components.h(
+                doc,
+                parent,
+                switch (kinds.Markdown.map[heading_id]) {
+                    .setext_h1_underline => 1,
+                    .setext_h2_underline => 2,
+                    else => unreachable,
+                },
+            );
+        },
+        .list => {
+            std.debug.assert(cursor.gotoFirstChild());
+            defer std.debug.assert(cursor.gotoParent());
+            std.debug.assert(cursor.gotoFirstChild());
+            defer std.debug.assert(cursor.gotoParent());
+            el_idx = switch (kinds.Markdown.map[cursor.node().kindId()]) {
+                .list_marker_minus => try Components.ul(doc, parent),
+                .list_marker_dot => try Components.ol(doc, parent),
+                else => unreachable,
+            };
+        },
+        .list_item => {
+            el_idx = try Components.li(doc, parent);
+        },
+        .block_quote => {
+            el_idx = try Components.blockquote(doc, parent);
+        },
+        .thematic_break => {
+            el_idx = try Components.hr(doc, parent);
+        },
         .section,
+        .list_marker_minus,
+        .list_marker_dot,
+        .block_continuation,
+        .block_quote_marker,
         .atx_h1_marker,
         .atx_h2_marker,
         .atx_h3_marker,
         .atx_h4_marker,
         .atx_h5_marker,
         .atx_h6_marker,
+        .setext_h1_underline,
+        .setext_h2_underline,
         => {},
         else => {
             std.log.warn("Unrecognized node: {s}", .{name});

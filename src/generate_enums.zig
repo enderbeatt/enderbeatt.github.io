@@ -12,7 +12,6 @@ extern fn tree_sitter_markdown_inline() *ts.Language;
 pub fn createEnum(w: *Io.Writer, name: []const u8, lang: *const ts.Language, arena: std.mem.Allocator) !void {
     try w.print("pub const {s} = enum {{\n", .{name});
     var map: std.array_hash_map.String([]const u8) = .empty;
-    defer map.deinit(arena);
 
     for (0..lang.nodeKindCount()) |i| {
         const smol: u16 = @intCast(i);
