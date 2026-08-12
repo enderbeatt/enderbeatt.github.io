@@ -39,6 +39,7 @@ pub fn getPageFile(target: []const u8) []const u8 {
 pub fn servePage(io: std.Io, gpa: std.mem.Allocator, cwd: std.Io.Dir, request: *std.http.Server.Request) !void {
     std.log.info("Got request for serve path: {s}", .{request.head.target});
     const file_name = getPageFile(request.head.target);
+    std.log.info("Serving file: {s}", .{ file_name });
     const file_contents = try cwd.readFileAlloc(
         io,
         file_name,

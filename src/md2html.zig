@@ -9,6 +9,7 @@ pub const std_options: std.Options = .{
 extern fn tree_sitter_markdown() *ts.Language;
 extern fn tree_sitter_markdown_inline() *ts.Language;
 extern fn tree_sitter_cpp() *ts.Language;
+extern fn tree_sitter_zig() *ts.Language;
 
 // what kind of things do i want?
 // 1. I want to be able to do .md -> .html generation
@@ -41,6 +42,20 @@ pub const HtmlDocument = struct {
     gpa: std.mem.Allocator,
     arena: std.heap.ArenaAllocator,
 
+    const Escaper = struct {
+        unescaped: []const u8,
+        pub fn format(he: Escaper, w: *std.Io.Writer) !void {
+            for (he.unescaped) |c| switch (c) {
+                '&' => try w.writeAll("&amp;"),
+                '<' => try w.writeAll("&lt;"),
+                '>' => try w.writeAll("&gt;"),
+                '"' => try w.writeAll("&quot;"),
+                '\'' => try w.writeAll("&#39;"),
+                else => try w.writeByte(c),
+            };
+        }
+    };
+
     pub const Index = enum(u32) {
         root = 0,
         _,
@@ -58,7 +73,7 @@ pub const HtmlDocument = struct {
         tag: []const u8,
 
         /// Attributes of the HTML element
-        attrs: std.StringArrayHashMapUnmanaged(Attr) = .empty,
+        attrs: std.array_hash_map.String(Attr) = .empty,
 
         /// Children of the element
         children: std.ArrayList(Index) = .empty,
@@ -95,6 +110,10 @@ pub const HtmlDocument = struct {
 
     pub const PrintError = error{WriteFailed};
 
+    pub fn fmtEscapeHtml(unescaped: []const u8) Escaper {
+        return .{ .unescaped = unescaped };
+    }
+
     pub fn addNode(self: *HtmlDocument, parent_idx: Index, element: Element) !Index {
         const idx: Index = @enumFromInt(self.elements.items.len);
         try self.elements.append(self.gpa, element);
@@ -125,7 +144,7 @@ pub const HtmlDocument = struct {
     fn printText(self: *const HtmlDocument, el: *const HtmlDocument.Element, w: *std.Io.Writer, state: *PrintState) !void {
         _ = self;
         _ = state;
-        try w.print("{s}", .{el.tag});
+        try w.print("{f}", .{fmtEscapeHtml(el.tag)});
     }
 
     fn printAttrs(self: *const HtmlDocument, attr_names: []const []const u8, attr_values: []const Element.Attr, w: *std.Io.Writer, state: *PrintState) !void {
@@ -137,9 +156,9 @@ pub const HtmlDocument = struct {
             switch (value) {
                 .boolean => {},
                 .str => |s| {
-                    std.log.debug("attr {s}={s}", .{name, s});
+                    std.log.debug("attr {s}={s}", .{ name, s });
                     try w.print("=\"{s}\"", .{s});
-                }
+                },
             }
         }
     }
@@ -214,7 +233,13 @@ pub const Components = struct {
             .type = .regular,
             .tag = "head",
         });
-        _ = head_idx;
+        const link_idx = try doc.addNode(head_idx, .{
+            .type = .void,
+            .tag = "link",
+        });
+        var link_el = doc.getElement(link_idx);
+        try link_el.attrs.put(doc.gpa, "rel", .{ .str = "stylesheet" });
+        try link_el.attrs.put(doc.gpa, "href", .{ .str = "style.css" });
 
         // <body>
         return try doc.addNode(html_idx, .{
@@ -229,9 +254,37 @@ pub const Components = struct {
             .tag = "p",
         });
     }
-    
+
     pub fn code(doc: *HtmlDocument, parent: HtmlDocument.Index) !HtmlDocument.Index {
         return try doc.addNode(parent, .{
+            .type = .regular,
+            .tag = "code",
+        });
+    }
+
+    pub fn nav(doc: *HtmlDocument, parent: HtmlDocument.Index) !HtmlDocument.Index {
+        return try doc.addNode(parent, .{
+            .type = .regular,
+            .tag = "nav",
+        });
+    }
+
+    pub fn time(doc: *HtmlDocument, parent: HtmlDocument.Index, datetime: []const u8) !HtmlDocument.Index {
+        const idx = try doc.addNode(parent, .{
+            .type = .regular,
+            .tag = "time",
+        });
+        var el = doc.getElement(idx);
+        try el.attrs.put(doc.gpa, "datetime", .{ .str = datetime });
+        return idx;
+    }
+
+    pub fn multilineCode(doc: *HtmlDocument, parent: HtmlDocument.Index) !HtmlDocument.Index {
+        const pre = try doc.addNode(parent, .{
+            .type = .regular,
+            .tag = "pre",
+        });
+        return try doc.addNode(pre, .{
             .type = .regular,
             .tag = "code",
         });
@@ -272,6 +325,18 @@ pub const Components = struct {
         });
     }
 
+    pub fn span(doc: *HtmlDocument, parent: HtmlDocument.Index, class: ?[]const u8) !HtmlDocument.Index {
+        const idx = try doc.addNode(parent, .{
+            .type = .regular,
+            .tag = "span",
+        });
+        var el = doc.getElement(idx);
+        if (class) |ss| {
+            try el.attrs.put(doc.gpa, "class", .{ .str = ss });
+        }
+        return idx;
+    }
+
     pub fn s(doc: *HtmlDocument, parent: HtmlDocument.Index) !HtmlDocument.Index {
         return try doc.addNode(parent, .{
             .type = .regular,
@@ -299,7 +364,7 @@ pub const Components = struct {
             .tag = "ol",
         });
     }
-     
+
     pub fn li(doc: *HtmlDocument, parent: HtmlDocument.Index) !HtmlDocument.Index {
         return try doc.addNode(parent, .{
             .type = .regular,
@@ -371,7 +436,7 @@ pub fn emitText(doc: *HtmlDocument, parent: HtmlDocument.Index, cursor: *ts.Tree
     const name = cursor.node().kind();
     const kind_id = cursor.node().kindId();
     std.log.debug("Parsing text node {s} with text {s}", .{ name, contents[node.startByte()..node.endByte()] });
-    defer std.log.debug("Quit parsing test node {s}", .{ name });
+    defer std.log.debug("Quit parsing test node {s}", .{name});
     switch (ts_help.MarkdownInline.map[kind_id]) {
         .strong_emphasis => {
             el_idx = try Components.strong(doc, parent);
@@ -385,22 +450,19 @@ pub fn emitText(doc: *HtmlDocument, parent: HtmlDocument.Index, cursor: *ts.Tree
         .code_span => {
             el_idx = try Components.code(doc, parent);
         },
-        .link_destination, 
-        .link_title,
-        .code_span_delimiter,
-        .emphasis_delimiter => return,
+        .link_destination, .link_title, .code_span_delimiter, .emphasis_delimiter => return,
         .hard_line_break => {
             _ = try Components.br(doc, parent);
         },
         .backslash_escape => {
             // removing backslash
-            _ = try Components.text(doc, parent, contents[node.startByte()+1..node.endByte()]);
+            _ = try Components.text(doc, parent, contents[node.startByte() + 1 .. node.endByte()]);
             return;
         },
         .uri_autolink => {
             el_idx = try Components.a(doc, parent);
             var el = doc.getElement(el_idx);
-            const slice = contents[node.startByte()+1..node.endByte()-1];
+            const slice = contents[node.startByte() + 1 .. node.endByte() - 1];
             try el.attrs.put(doc.gpa, "href", .{ .str = slice });
             _ = try Components.text(doc, el_idx, slice);
             return;
@@ -409,15 +471,15 @@ pub fn emitText(doc: *HtmlDocument, parent: HtmlDocument.Index, cursor: *ts.Tree
             std.debug.assert(cursor.gotoFirstChild());
             defer std.debug.assert(cursor.gotoParent());
             el_idx = try Components.a(doc, parent);
-            var el = doc.getElement(el_idx);
             while (true) {
                 const child_node = cursor.node();
                 if (cursor.node().isNamed()) {
                     const slice = contents[child_node.startByte()..child_node.endByte()];
+                    var el = doc.getElement(el_idx);
                     switch (ts_help.MarkdownInline.map[child_node.kindId()]) {
                         .link_destination => try el.attrs.put(doc.gpa, "href", .{ .str = slice }),
                         // quotes are also a part of link_title for some reason
-                        .link_title => try el.attrs.put(doc.gpa, "title", .{ .str = slice[1..slice.len-1] }),
+                        .link_title => try el.attrs.put(doc.gpa, "title", .{ .str = slice[1 .. slice.len - 1] }),
                         .link_text => try emitText(doc, el_idx, cursor, contents),
                         else => unreachable,
                     }
@@ -440,7 +502,7 @@ pub fn emitText(doc: *HtmlDocument, parent: HtmlDocument.Index, cursor: *ts.Tree
                     switch (ts_help.MarkdownInline.map[child_node.kindId()]) {
                         .link_destination => try el.attrs.put(doc.gpa, "src", .{ .str = slice }),
                         // quotes are also a part of link_title for some reason
-                        .link_title => try el.attrs.put(doc.gpa, "alt", .{ .str = slice[1..slice.len-1] }),
+                        .link_title => try el.attrs.put(doc.gpa, "alt", .{ .str = slice[1 .. slice.len - 1] }),
                         .image_description => try el.attrs.put(doc.gpa, "title", .{ .str = slice }),
                         else => unreachable,
                     }
@@ -484,6 +546,39 @@ pub fn emitText(doc: *HtmlDocument, parent: HtmlDocument.Index, cursor: *ts.Tree
     }
 }
 
+pub fn emitCode(doc: *HtmlDocument, parent: HtmlDocument.Index, cursor: *ts.TreeCursor, highlights: *const Parser.Result.HighlightMap, contents: []const u8) !void {
+    var el_idx: HtmlDocument.Index = parent;
+    const node = cursor.node();
+    const name = cursor.node().kind();
+    std.log.debug("Parsing code node {s} with text {s}", .{ name, contents[node.startByte()..node.endByte()] });
+    const id = @intFromPtr(node.id);
+    if (highlights.get(id)) |class| {
+        el_idx = try Components.span(doc, parent, class);
+    }
+    var begin = node.startByte();
+    const end = node.endByte();
+    if (cursor.gotoFirstChild()) {
+        defer std.debug.assert(cursor.gotoParent());
+        while (true) {
+            const child_node = cursor.node();
+            const next_begin = child_node.startByte();
+            const slice = contents[begin..next_begin];
+            if (slice.len > 0) {
+                _ = try Components.text(doc, el_idx, slice);
+            }
+            begin = child_node.endByte();
+            try emitCode(doc, el_idx, cursor, highlights, contents);
+            if (!cursor.gotoNextSibling()) {
+                break;
+            }
+        }
+    }
+    const slice = contents[begin..end];
+    if (slice.len > 0) {
+        _ = try Components.text(doc, el_idx, slice);
+    }
+}
+
 pub fn emitNode(doc: *HtmlDocument, parent: HtmlDocument.Index, cursor: *ts.TreeCursor, trees: *const Parser.Result, contents: []const u8) !void {
     var el_idx: HtmlDocument.Index = parent;
     const node = cursor.node();
@@ -492,23 +587,42 @@ pub fn emitNode(doc: *HtmlDocument, parent: HtmlDocument.Index, cursor: *ts.Tree
     const id = @intFromPtr(node.id);
     if (trees.trees.get(id)) |tree| {
         std.log.debug("Got injection: {s}", .{@tagName(tree.kind)});
-        if (tree.kind == .markdown_inline) {
-            // here we should start parsing it as a text.
-            var injection_cursor = tree.tree.walk();
-            defer injection_cursor.destroy();
-            try emitText(
-                doc,
-                el_idx,
-                &injection_cursor,
-                tree.bytes,
-            );
-            return;
+        switch (tree.kind) {
+            .markdown_inline => {
+                // here we should start parsing it as a text.
+                var injection_cursor = tree.tree.walk();
+                defer injection_cursor.destroy();
+                try emitText(
+                    doc,
+                    el_idx,
+                    &injection_cursor,
+                    tree.bytes,
+                );
+                return;
+            },
+            .code_block => {
+                var code_cursor = tree.tree.walk();
+                defer code_cursor.destroy();
+                try emitCode(
+                    doc,
+                    try Components.multilineCode(doc, parent),
+                    &code_cursor,
+                    &tree.highlights,
+                    tree.bytes,
+                );
+                return;
+            },
+            .markdown => {},
+            // else => |v| std.log.warn("TODO: tree.kind == {s}", .{@tagName(v)}),
         }
     }
     const kind_id = cursor.node().kindId();
     switch (ts_help.Markdown.map[kind_id]) {
         .document => {
             el_idx = try Components.document(doc, parent);
+        },
+        .minus_metadata => {
+            try emitFrontMatter(doc, parent, contents[node.startByte() + 4 .. node.endByte() - 4]);
         },
         .paragraph => {
             el_idx = try Components.p(doc, parent);
@@ -597,11 +711,62 @@ pub fn emitNode(doc: *HtmlDocument, parent: HtmlDocument.Index, cursor: *ts.Tree
     }
 }
 
+pub const FrontMatter = struct {
+    pub const Key = enum {
+        unknown,
+        created,
+        name,
+    };
+    date: ?[]const u8 = null,
+    name: ?[]const u8 = null,
+};
+
+pub fn emitHeader(doc: *HtmlDocument, parent: HtmlDocument.Index) !void {
+    const nav_idx = try Components.nav(doc, parent);
+    {
+        const a_idx = try Components.a(doc, nav_idx);
+        var el = doc.getElement(a_idx);
+        try el.attrs.put(doc.gpa, "href", .{ .str = "/" });
+        _ = try Components.text(doc, a_idx, "Home");
+    }
+}
+
+pub fn emitFrontMatter(doc: *HtmlDocument, parent: HtmlDocument.Index, contents: []const u8) !void {
+    // we are not doing yaml, it's just going to be key: value\n
+    var r = std.Io.Reader.fixed(contents);
+    var front: FrontMatter = .{};
+    while (r.bufferedLen() > 0) {
+        const key = try r.takeDelimiter(':') orelse return error.KeyMissing;
+        r.toss(1);
+        const value = try r.takeDelimiter('\n') orelse return error.ValueMissing;
+        switch (std.meta.stringToEnum(FrontMatter.Key, key) orelse .unknown) {
+            .created => front.date = value,
+            .name => front.name = value,
+            .unknown => continue,
+        }
+    }
+    try emitHeader(doc, parent);
+    if (front.name) |name| {
+        const h1_idx = try Components.h(doc, parent, 1);
+        _ = try Components.text(doc, h1_idx, name);
+    }
+    if (front.date) |date| {
+        const date_idx = try Components.time(doc, parent, date);
+        _ = try Components.text(
+            doc,
+            date_idx,
+            try std.fmt.allocPrint(doc.arena.allocator(), "Published on {s}", .{date}),
+        );
+    }
+}
+
 pub const Parser = struct {
     registry: *const Language.Registry,
 
     markdown: *ts.Parser,
     markdown_inline: *ts.Parser,
+    cpp: *ts.Parser,
+    zig: *ts.Parser,
 
     pub const Result = struct {
         trees: TreeMap = .empty,
@@ -613,19 +778,23 @@ pub const Parser = struct {
             kind: enum {
                 markdown,
                 markdown_inline,
+                code_block,
             },
+            highlights: HighlightMap = .empty,
 
-            pub fn deinit(self: *Tree) void {
+            pub fn deinit(self: *Tree, gpa: std.mem.Allocator) void {
                 self.tree.destroy();
+                self.highlights.deinit(gpa);
                 self.* = undefined;
             }
         };
 
-        pub const TreeMap = std.AutoArrayHashMapUnmanaged(usize, Tree);
+        pub const TreeMap = std.array_hash_map.Auto(usize, Tree);
+        pub const HighlightMap = std.array_hash_map.Auto(usize, []const u8);
 
         pub fn deinit(self: *Result, gpa: std.mem.Allocator) void {
             for (self.trees.values()) |*t| {
-                t.deinit();
+                t.deinit(gpa);
             }
             self.trees.deinit(gpa);
             self.* = undefined;
@@ -637,11 +806,17 @@ pub const Parser = struct {
         try markdown_parser.setLanguage(registry.markdown.language);
         const markdown_inline_parser = ts.Parser.create();
         try markdown_inline_parser.setLanguage(registry.markdown_inline.language);
+        const cpp_parser = ts.Parser.create();
+        try cpp_parser.setLanguage(registry.cpp.language);
+        const zig_parser = ts.Parser.create();
+        try zig_parser.setLanguage(registry.zig.language);
 
         return .{
             .registry = registry,
             .markdown = markdown_parser,
             .markdown_inline = markdown_inline_parser,
+            .cpp = cpp_parser,
+            .zig = zig_parser,
         };
     }
 
@@ -665,19 +840,80 @@ pub const Parser = struct {
 
         while (query_cursor.nextMatch()) |match| {
             std.log.debug("Found match with pattern_index {d}", .{match.pattern_index});
-            if (match.pattern_index != 5) continue;
-            // inline
-            for (match.captures) |capture| {
-                const injection_bytes = bytes[capture.node.startByte()..capture.node.endByte()];
-                const inline_tree = self.markdown_inline.parseString(
-                    injection_bytes,
-                    null,
-                ) orelse return error.ParseMarkdownInlineError;
-                try tree_map.put(gpa, @intFromPtr(capture.node.id), .{
-                    .kind = .markdown_inline,
-                    .bytes = injection_bytes,
-                    .tree = inline_tree,
-                });
+            switch (match.pattern_index) {
+                // code block
+                0 => {
+                    var lang_opt: ?[]const u8 = null;
+                    var code_bytes_opt: ?[]const u8 = null;
+                    var node_id_opt: ?usize = null;
+                    for (match.captures) |capture| {
+                        switch (capture.index) {
+                            0 => lang_opt = bytes[capture.node.startByte()..capture.node.endByte()],
+                            1 => {
+                                code_bytes_opt = bytes[capture.node.startByte()..capture.node.endByte()];
+                                node_id_opt = @intFromPtr(capture.node.id);
+                            },
+                            else => unreachable,
+                        }
+                    }
+
+                    const lang = lang_opt.?;
+                    const code_bytes = code_bytes_opt.?;
+
+                    const code_parser, const highlight_query = if (std.mem.eql(u8, lang, "markdown"))
+                        .{ self.markdown, self.registry.markdown.highlights }
+                    else if (std.mem.eql(u8, lang, "markdown-inline"))
+                        .{ self.markdown, self.registry.markdown.highlights }
+                    else if (std.mem.eql(u8, lang, "cpp"))
+                        .{ self.cpp, self.registry.cpp.highlights }
+                    else if (std.mem.eql(u8, lang, "zig"))
+                        .{ self.zig, self.registry.zig.highlights }
+                    else {
+                        std.log.warn("Codeblock with unknown language: {s}", .{lang});
+                        continue;
+                    };
+
+                    const code_tree = code_parser.parseString(
+                        code_bytes,
+                        null,
+                    ) orelse return error.ParseCodeBlockError;
+
+                    var map: Result.HighlightMap = .empty;
+                    if (highlight_query) |query| {
+                        const highlight_query_cursor = ts.QueryCursor.create();
+                        defer highlight_query_cursor.destroy();
+                        highlight_query_cursor.exec(query, code_tree.rootNode());
+                        while (highlight_query_cursor.nextMatch()) |highlight_match| {
+                            for (highlight_match.captures) |capture| {
+                                try map.put(gpa, @intFromPtr(capture.node.id), query.captureNameForId(capture.index).?);
+                            }
+                        }
+                    }
+
+                    const node_id = node_id_opt.?;
+                    try tree_map.put(gpa, node_id, .{
+                        .kind = .code_block,
+                        .bytes = code_bytes,
+                        .tree = code_tree,
+                        .highlights = map,
+                    });
+                },
+                // inline
+                5 => {
+                    for (match.captures) |capture| {
+                        const injection_bytes = bytes[capture.node.startByte()..capture.node.endByte()];
+                        const inline_tree = self.markdown_inline.parseString(
+                            injection_bytes,
+                            null,
+                        ) orelse return error.ParseMarkdownInlineError;
+                        try tree_map.put(gpa, @intFromPtr(capture.node.id), .{
+                            .kind = .markdown_inline,
+                            .bytes = injection_bytes,
+                            .tree = inline_tree,
+                        });
+                    }
+                },
+                else => {},
             }
         }
 
@@ -690,6 +926,8 @@ pub const Parser = struct {
     pub fn deinit(self: *Parser) void {
         self.markdown.destroy();
         self.markdown_inline.destroy();
+        self.cpp.destroy();
+        self.zig.destroy();
         self.* = undefined;
     }
 };
@@ -703,6 +941,7 @@ pub const Language = struct {
         markdown: Language,
         markdown_inline: Language,
         cpp: Language,
+        zig: Language,
 
         const QueryError = std.Io.Dir.ReadFileAllocError || ts.Query.Error;
 
@@ -734,6 +973,9 @@ pub const Language = struct {
                 .cpp = .{
                     .language = tree_sitter_cpp(),
                 },
+                .zig = .{
+                    .language = tree_sitter_zig(),
+                },
             };
             self.markdown.injections = getQuery(
                 io,
@@ -762,6 +1004,20 @@ pub const Language = struct {
                 gpa,
             ) catch |err| logErr(err);
 
+            self.zig.injections = getQuery(
+                io,
+                "vendor/zig/queries/injections.scm",
+                self.zig.language,
+                gpa,
+            ) catch |err| logErr(err);
+
+            self.zig.highlights = getQuery(
+                io,
+                "vendor/zig/queries/highlights.scm",
+                self.zig.language,
+                gpa,
+            ) catch |err| logErr(err);
+
             return self;
         }
 
@@ -769,6 +1025,7 @@ pub const Language = struct {
             self.markdown.deinit();
             self.markdown_inline.deinit();
             self.cpp.deinit();
+            self.zig.deinit();
             self.* = undefined;
         }
     };
@@ -795,6 +1052,7 @@ pub fn parseFile(gpa: std.mem.Allocator, contents: []const u8, parser: *const Pa
     var cursor = tree.tree.walk();
     defer cursor.destroy();
 
+    // try emitHeader(&doc, HtmlDocument.Index.root);
     try emitNode(&doc, HtmlDocument.Index.root, &cursor, &res, tree.bytes);
 
     return doc;
