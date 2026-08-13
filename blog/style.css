@@ -71,8 +71,6 @@ pre {
     scrollbar-width: thin; /* Firefox */
     scrollbar-color: var(--color-grey) #282828; /* Firefox */
     padding: 5px;
-    /* padding-top: 5px; */
-    /* padding-bottom: 5px; */
 }
 
 /* Chrome, Edge, Safari */
