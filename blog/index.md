@@ -7,4 +7,4 @@ stand-up routine for the next time I go to the shower.
 
 ## Posts
 
-- [2026-08-12 Do we need Vim at this point?](do-we-need-vim-at-this-point.html).
+- [2026-08-13 Do we need Vim at this point?](do-we-need-vim-at-this-point.html).
