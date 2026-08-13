@@ -93,7 +93,9 @@ pub fn build(b: *Build) !void {
 
     const gen_step = b.step("gen", "Test the enum generation");
     const get_run_step = b.addRunArtifact(generate_enums_exe);
-    get_run_step.addPassthruArgs();
+    if (b.args) |args| {
+        get_run_step.addArgs(args);
+    }
     gen_step.dependOn(&get_run_step.step);
 
     const parse_step = b.step("parse", "Run md2html over dir");

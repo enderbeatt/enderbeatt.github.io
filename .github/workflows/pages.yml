@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  ZIG_VERSION: 0.17.0-dev.1282+c0f9b51d8
+  ZIG_VERSION: 0.16.0
 
 jobs:
   build:
