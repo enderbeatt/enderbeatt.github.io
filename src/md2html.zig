@@ -233,6 +233,29 @@ pub const Components = struct {
             .type = .regular,
             .tag = "head",
         });
+
+        // <meta charset="utf-8">
+        {
+            const idx = try doc.addNode(head_idx, .{
+                .type = .void,
+                .tag = "meta",
+            });
+            var el = doc.getElement(idx);
+            try el.attrs.put(doc.gpa, "charset", .{ .str = "utf-8" });
+        }
+
+        // <meta viewport=...>
+        {
+            const idx = try doc.addNode(head_idx, .{
+                .type = .void,
+                .tag = "meta",
+            });
+            var el = doc.getElement(idx);
+            try el.attrs.put(doc.gpa, "viewport", .{ .str = "viewport" });
+            try el.attrs.put(doc.gpa, "content", .{ .str = "width=device-width, initial-scale=1" });
+        }
+
+        // <link>
         const link_idx = try doc.addNode(head_idx, .{
             .type = .void,
             .tag = "link",
