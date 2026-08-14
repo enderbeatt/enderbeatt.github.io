@@ -41,6 +41,10 @@ nav a:hover {
     text-decoration: underline;
 }
 
+article > * {
+    max-width: 70ch;
+}
+
 body {
     max-width: 80ch;
     padding: 2ch;

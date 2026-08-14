@@ -292,6 +292,20 @@ pub const Components = struct {
         });
     }
 
+    pub fn main(doc: *HtmlDocument, parent: HtmlDocument.Index) !HtmlDocument.Index {
+        return try doc.addNode(parent, .{
+            .type = .regular,
+            .tag = "main",
+        });
+    }
+
+    pub fn article(doc: *HtmlDocument, parent: HtmlDocument.Index) !HtmlDocument.Index {
+        return try doc.addNode(parent, .{
+            .type = .regular,
+            .tag = "article",
+        });
+    }
+
     pub fn time(doc: *HtmlDocument, parent: HtmlDocument.Index, datetime: []const u8) !HtmlDocument.Index {
         const idx = try doc.addNode(parent, .{
             .type = .regular,
@@ -641,12 +655,6 @@ pub fn emitNode(doc: *HtmlDocument, parent: HtmlDocument.Index, cursor: *ts.Tree
     }
     const kind_id = cursor.node().kindId();
     switch (ts_help.Markdown.map[kind_id]) {
-        .document => {
-            el_idx = try Components.document(doc, parent);
-        },
-        .minus_metadata => {
-            try emitFrontMatter(doc, parent, contents[node.startByte() + 4 .. node.endByte() - 4]);
-        },
         .paragraph => {
             el_idx = try Components.p(doc, parent);
         },
@@ -734,6 +742,52 @@ pub fn emitNode(doc: *HtmlDocument, parent: HtmlDocument.Index, cursor: *ts.Tree
     }
 }
 
+pub fn emitDoc(
+    doc: *HtmlDocument,
+    parent: HtmlDocument.Index,
+    cursor: *ts.TreeCursor,
+    trees: *const Parser.Result,
+    contents: []const u8,
+) !void {
+    var el_idx: HtmlDocument.Index = parent;
+    const node = cursor.node();
+    const name = cursor.node().kind();
+    std.log.debug("Parsing node {s} with text {s}", .{ name, contents[node.startByte()..node.endByte()] });
+    const kind_id = cursor.node().kindId();
+    const kind = ts_help.Markdown.map[kind_id];
+    std.debug.assert(kind == .document);
+    el_idx = try Components.document(doc, parent);
+    try emitHeader(doc, el_idx);
+    if (!cursor.gotoFirstChild()) {
+        return;
+    }
+
+    const front_matter: ?FrontMatter = blk: {
+        const child_id = cursor.node().kindId();
+        const child_kind = ts_help.Markdown.map[child_id];
+        if (child_kind != .minus_metadata) {
+            break :blk null;
+        }
+        var r: std.Io.Reader = .fixed(contents[cursor.node().startByte() + 4 .. cursor.node().endByte() - 4]);
+        break :blk try FrontMatter.parse(&r);
+    };
+
+    el_idx = try Components.article(doc, try Components.main(doc, el_idx));
+    if (front_matter) |fm| {
+        try fm.emit(doc, el_idx);
+    }
+
+    defer std.debug.assert(cursor.gotoParent());
+    while (true) {
+        if (cursor.node().isNamed()) {
+            try emitNode(doc, el_idx, cursor, trees, contents);
+        }
+        if (!cursor.gotoNextSibling()) {
+            break;
+        }
+    }
+}
+
 pub const FrontMatter = struct {
     pub const Key = enum {
         unknown,
@@ -742,6 +796,37 @@ pub const FrontMatter = struct {
     };
     date: ?[]const u8 = null,
     name: ?[]const u8 = null,
+
+    pub fn parse(r: *std.Io.Reader) !FrontMatter {
+        // we are not doing yaml, it's just going to be key: value\n
+        var front: FrontMatter = .{};
+        while (r.bufferedLen() > 0) {
+            const key = try r.takeDelimiter(':') orelse return error.KeyMissing;
+            r.toss(1);
+            const value = try r.takeDelimiter('\n') orelse return error.ValueMissing;
+            switch (std.meta.stringToEnum(FrontMatter.Key, key) orelse .unknown) {
+                .created => front.date = value,
+                .name => front.name = value,
+                .unknown => continue,
+            }
+        }
+        return front;
+    }
+
+    pub fn emit(front: *const FrontMatter, doc: *HtmlDocument, parent: HtmlDocument.Index) !void {
+        if (front.name) |name| {
+            const h1_idx = try Components.h(doc, parent, 1);
+            _ = try Components.text(doc, h1_idx, name);
+        }
+        if (front.date) |date| {
+            const date_idx = try Components.time(doc, parent, date);
+            _ = try Components.text(
+                doc,
+                date_idx,
+                try std.fmt.allocPrint(doc.arena.allocator(), "Published on {s}", .{date}),
+            );
+        }
+    }
 };
 
 pub fn emitHeader(doc: *HtmlDocument, parent: HtmlDocument.Index) !void {
@@ -751,35 +836,6 @@ pub fn emitHeader(doc: *HtmlDocument, parent: HtmlDocument.Index) !void {
         var el = doc.getElement(a_idx);
         try el.attrs.put(doc.gpa, "href", .{ .str = "/" });
         _ = try Components.text(doc, a_idx, "Home");
-    }
-}
-
-pub fn emitFrontMatter(doc: *HtmlDocument, parent: HtmlDocument.Index, contents: []const u8) !void {
-    // we are not doing yaml, it's just going to be key: value\n
-    var r = std.Io.Reader.fixed(contents);
-    var front: FrontMatter = .{};
-    while (r.bufferedLen() > 0) {
-        const key = try r.takeDelimiter(':') orelse return error.KeyMissing;
-        r.toss(1);
-        const value = try r.takeDelimiter('\n') orelse return error.ValueMissing;
-        switch (std.meta.stringToEnum(FrontMatter.Key, key) orelse .unknown) {
-            .created => front.date = value,
-            .name => front.name = value,
-            .unknown => continue,
-        }
-    }
-    try emitHeader(doc, parent);
-    if (front.name) |name| {
-        const h1_idx = try Components.h(doc, parent, 1);
-        _ = try Components.text(doc, h1_idx, name);
-    }
-    if (front.date) |date| {
-        const date_idx = try Components.time(doc, parent, date);
-        _ = try Components.text(
-            doc,
-            date_idx,
-            try std.fmt.allocPrint(doc.arena.allocator(), "Published on {s}", .{date}),
-        );
     }
 }
 
@@ -1075,8 +1131,7 @@ pub fn parseFile(gpa: std.mem.Allocator, contents: []const u8, parser: *const Pa
     var cursor = tree.tree.walk();
     defer cursor.destroy();
 
-    // try emitHeader(&doc, HtmlDocument.Index.root);
-    try emitNode(&doc, HtmlDocument.Index.root, &cursor, &res, tree.bytes);
+    try emitDoc(&doc, HtmlDocument.Index.root, &cursor, &res, tree.bytes);
 
     return doc;
 }
