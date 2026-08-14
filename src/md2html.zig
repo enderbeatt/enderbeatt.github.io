@@ -244,14 +244,14 @@ pub const Components = struct {
             try el.attrs.put(doc.gpa, "charset", .{ .str = "utf-8" });
         }
 
-        // <meta viewport=...>
+        // <meta name="viewport" content=...>
         {
             const idx = try doc.addNode(head_idx, .{
                 .type = .void,
                 .tag = "meta",
             });
             var el = doc.getElement(idx);
-            try el.attrs.put(doc.gpa, "viewport", .{ .str = "viewport" });
+            try el.attrs.put(doc.gpa, "name", .{ .str = "viewport" });
             try el.attrs.put(doc.gpa, "content", .{ .str = "width=device-width, initial-scale=1" });
         }
 
